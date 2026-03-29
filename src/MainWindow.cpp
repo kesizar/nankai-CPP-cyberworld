@@ -1,0 +1,508 @@
+#include "MainWindow.h"
+
+#include "SaveManager.h"
+
+#include <QApplication>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QRandomGenerator>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMessageBox>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QSplitter>
+#include <QTextBrowser>
+#include <QTimer>
+#include <QVBoxLayout>
+
+#include <json.hpp>
+
+namespace {
+
+using nlohmann::json;
+
+QString cyberpsychosisHtml() {
+    return QStringLiteral(
+        "<div style=\"color:#ff1a1a;font-size:26px;font-weight:900;text-align:center;"
+        "font-family:'Consolas','Microsoft YaHei',monospace;padding:24px;\">"
+        "[警告：神经阻断剂失效。你已彻底丧失人性，沦为赛博精神病。暴恐机动队 (MaxTac) "
+        "已在三分钟后将你击毙。游戏结束。]"
+        "</div>");
+}
+
+QString randomGlitchFragment() {
+    static const QString kPool =
+        QStringLiteral("█▓▒░0x7F错λΩ÷∆");
+    const qint64 seed = QDateTime::currentMSecsSinceEpoch();
+    QString out;
+    const int len = 4 + int(seed % 6);
+    for (int i = 0; i < len; ++i) {
+        out.append(kPool.at(int(seed + i * 31) % kPool.size()));
+    }
+    return out;
+}
+
+int clampBarMax(int value) {
+    return qMax(100, qMax(0, value));
+}
+
+}  // namespace
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    buildUi();
+    applyCyberpunkQss();
+
+    humanity_glitch_timer_ = new QTimer(this);
+    humanity_glitch_timer_->setSingleShot(true);
+    connect(humanity_glitch_timer_, &QTimer::timeout, this,
+            &MainWindow::onHumanityGlitchPulse);
+
+    endgame_flash_timer_ = new QTimer(this);
+    connect(endgame_flash_timer_, &QTimer::timeout, this,
+            &MainWindow::onEndgameFlashTick);
+
+    connect(&llm_client_, &LLMClient::completionReceived, this,
+            &MainWindow::onLlmCompleted);
+    connect(&llm_client_, &LLMClient::requestFailed, this,
+            &MainWindow::onLlmFailed);
+
+    loadConfigOrWarn();
+    bootstrapGameState();
+    refreshPlayerPanel();
+
+    if (!game_locked_) {
+        onHumanityGlitchPulse();
+    }
+}
+
+std::string MainWindow::saveGamePathStd() const {
+    return saveGamePath().toStdString();
+}
+
+QString MainWindow::saveGamePath() const {
+    return QCoreApplication::applicationDirPath() +
+           QStringLiteral("/savegame.json");
+}
+
+void MainWindow::buildUi() {
+    central_ = new QWidget(this);
+    setCentralWidget(central_);
+    auto* root = new QHBoxLayout(central_);
+    root->setContentsMargins(8, 8, 8, 8);
+
+    auto* splitter = new QSplitter(Qt::Horizontal, central_);
+    root->addWidget(splitter, 1);
+
+    auto* left = new QWidget(splitter);
+    auto* left_lay = new QVBoxLayout(left);
+    left_lay->setContentsMargins(4, 4, 4, 4);
+    narrative_ = new QTextBrowser(left);
+    narrative_->setOpenExternalLinks(false);
+    narrative_->setReadOnly(true);
+    left_lay->addWidget(narrative_, 1);
+
+    auto* row = new QHBoxLayout();
+    action_input_ = new QLineEdit(left);
+    action_input_->setPlaceholderText(
+        QStringLiteral("输入你的行动……（需先配置 config.json 中的 api_key）"));
+    execute_btn_ = new QPushButton(QStringLiteral("执行"), left);
+    row->addWidget(action_input_, 1);
+    row->addWidget(execute_btn_);
+    left_lay->addLayout(row);
+    splitter->addWidget(left);
+
+    right_panel_ = new QWidget(splitter);
+    auto* right_lay = new QVBoxLayout(right_panel_);
+    right_lay->setContentsMargins(8, 8, 8, 8);
+    auto* status_title = new QLabel(QStringLiteral("/// 状态面板"), right_panel_);
+    status_title->setObjectName(QStringLiteral("PanelTitle"));
+    right_lay->addWidget(status_title);
+
+    hp_label_ = new QLabel(QStringLiteral("HP"), right_panel_);
+    hp_bar_ = new QProgressBar(right_panel_);
+    hp_bar_->setRange(0, 100);
+    hp_bar_->setTextVisible(true);
+    right_lay->addWidget(hp_label_);
+    right_lay->addWidget(hp_bar_);
+
+    humanity_label_ = new QLabel(QStringLiteral("Humanity"), right_panel_);
+    humanity_bar_ = new QProgressBar(right_panel_);
+    humanity_bar_->setRange(0, 100);
+    humanity_bar_->setTextVisible(true);
+    right_lay->addWidget(humanity_label_);
+    right_lay->addWidget(humanity_bar_);
+
+    auto* inv_lbl =
+        new QLabel(QStringLiteral("背包 inventory"), right_panel_);
+    inv_lbl->setObjectName(QStringLiteral("SubTitle"));
+    inventory_list_ = new QListWidget(right_panel_);
+    auto* cyber_lbl =
+        new QLabel(QStringLiteral("义体 cyberware"), right_panel_);
+    cyber_lbl->setObjectName(QStringLiteral("SubTitle"));
+    cyberware_list_ = new QListWidget(right_panel_);
+    right_lay->addWidget(inv_lbl);
+    right_lay->addWidget(inventory_list_, 1);
+    right_lay->addWidget(cyber_lbl);
+    right_lay->addWidget(cyberware_list_, 1);
+    splitter->addWidget(right_panel_);
+
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 2);
+
+    connect(execute_btn_, &QPushButton::clicked, this,
+            &MainWindow::onExecuteClicked);
+}
+
+void MainWindow::applyCyberpunkQss() {
+    const QString qss = QStringLiteral(
+        "QMainWindow, QWidget { background-color: #141418; color: #5dffc8; "
+        "font-family: 'Microsoft YaHei','Segoe UI',sans-serif; font-size: 14px; }"
+        "QTextBrowser {"
+        "  background-color: #0d0d10;"
+        "  color: #5dffc8;"
+        "  border: 1px solid #1f3a3a;"
+        "  border-radius: 4px;"
+        "  selection-background-color: #255050;"
+        "}"
+        "QLineEdit {"
+        "  background-color: #0d0d10;"
+        "  color: #5dffc8;"
+        "  border: 1px solid #2b4a4a;"
+        "  border-radius: 4px;"
+        "  padding: 6px;"
+        "}"
+        "QPushButton {"
+        "  background-color: #1b2a2a;"
+        "  color: #ffe066;"
+        "  border: 1px solid #ffe066;"
+        "  border-radius: 4px;"
+        "  padding: 8px 18px;"
+        "  font-weight: bold;"
+        "}"
+        "QPushButton:hover { background-color: #234040; }"
+        "QPushButton:pressed { background-color: #0f2020; }"
+        "QPushButton:disabled { color: #666; border-color: #444; }"
+        "QLabel#PanelTitle { color: #ffe066; font-weight: bold; font-size: 15px; }"
+        "QLabel#SubTitle { color: #7df9ff; font-size: 13px; }"
+        "QProgressBar {"
+        "  border: 1px solid #2a3a3a;"
+        "  border-radius: 4px;"
+        "  text-align: center;"
+        "  background-color: #101018;"
+        "  color: #e8fff7;"
+        "}"
+        "QListWidget {"
+        "  background-color: #0d0d10;"
+        "  color: #5dffc8;"
+        "  border: 1px solid #1f3a3a;"
+        "  border-radius: 4px;"
+        "}");
+    qApp->setStyleSheet(qss);
+}
+
+void MainWindow::loadConfigOrWarn() {
+    const QString cfg =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/config.json");
+    if (!llm_client_.loadApiKeyFromConfig(cfg)) {
+        QMessageBox::warning(
+            this, QStringLiteral("配置缺失"),
+            QStringLiteral(
+                "未能从 %1 读取 API Key。\n请将 api_key 写入 config.json 后重启。\n"
+                "（仍可先浏览界面，但无法发起演算请求）")
+                .arg(cfg));
+    }
+}
+
+void MainWindow::bootstrapGameState() {
+    if (SaveManager::loadFromFile(player_, world_, saveGamePathStd())) {
+        narrative_->append(
+            QStringLiteral("<p style=\"color:#ffe066\">【系统】存档已载入。</p>"));
+    } else {
+        narrative_->append(QStringLiteral(
+            "<p style=\"color:#7df9ff\">欢迎来到夜之城。高科技，低生活 —— "
+            "你刚拿到一件军用级义体，活下去，或者被烧成灰。</p>"
+            "<p style=\"color:#5dffc8\">在下方输入行动，点击<strong>执行</strong>开始。"
+            "</p>"));
+    }
+    if (player_.humanity() <= 0) {
+        enterCyberpsychosisEnding();
+    }
+}
+
+void MainWindow::refreshPlayerPanel() {
+    const int hp_max = clampBarMax(player_.hp());
+    hp_bar_->setRange(0, hp_max);
+    hp_bar_->setValue(qBound(0, player_.hp(), hp_max));
+    hp_bar_->setFormat(QStringLiteral("%v / %m"));
+
+    const int hum_max = clampBarMax(player_.humanity());
+    humanity_bar_->setRange(0, hum_max);
+    humanity_bar_->setValue(qBound(0, player_.humanity(), hum_max));
+    humanity_bar_->setFormat(QStringLiteral("%v / %m"));
+
+    /**
+     * Humanity 条：分段警示色（>50 青绿、31–50 琥珀、1–30 赤红、<=0 深红底）。
+     * 与 PRD 第五部分「<=30 暗红警示」呼应，用 chunk 颜色动态切换。
+     */
+    if (player_.humanity() > 50) {
+        humanity_bar_->setStyleSheet(QStringLiteral(
+            "QProgressBar::chunk { background-color: qlineargradient("
+            "x1:0,y1:0,x2:1,y2:0, stop:0 #00ffd0, stop:1 #2d7fff); }"));
+    } else if (player_.humanity() > 30) {
+        humanity_bar_->setStyleSheet(QStringLiteral(
+            "QProgressBar::chunk { background-color: qlineargradient("
+            "x1:0,y1:0,x2:1,y2:0, stop:0 #ffcc33, stop:1 #ff6b2d); }"));
+    } else if (player_.humanity() > 0) {
+        humanity_bar_->setStyleSheet(QStringLiteral(
+            "QProgressBar::chunk { background-color: #b31217; }"));
+    } else {
+        humanity_bar_->setStyleSheet(QStringLiteral(
+            "QProgressBar::chunk { background-color: #4a0000; }"));
+    }
+
+    inventory_list_->clear();
+    for (const auto& s : player_.inventory()) {
+        inventory_list_->addItem(QString::fromStdString(s));
+    }
+    cyberware_list_->clear();
+    for (const auto& s : player_.cyberware()) {
+        cyberware_list_->addItem(QString::fromStdString(s));
+    }
+
+    /**
+     * 低人性视觉联动（<=50）：右侧面板偶尔透出暗红压迫；更细节的闪烁在 onHumanityGlitchPulse。
+     */
+    if (player_.humanity() <= 30) {
+        right_panel_->setStyleSheet(QStringLiteral(
+            "QWidget { background-color: rgba(80, 12, 12, 55); border-radius: 6px; }"));
+    } else if (player_.humanity() <= 50) {
+        right_panel_->setStyleSheet(QStringLiteral(
+            "QWidget { background-color: rgba(55, 20, 20, 35); border-radius: 6px; }"));
+    } else {
+        right_panel_->setStyleSheet(QString());
+    }
+}
+
+void MainWindow::setInputBusy(bool busy, const QString& placeholder) {
+    request_inflight_ = busy;
+    if (game_locked_) {
+        action_input_->setEnabled(false);
+        execute_btn_->setEnabled(false);
+        return;
+    }
+    action_input_->setEnabled(!busy);
+    execute_btn_->setEnabled(!busy);
+    if (busy) {
+        action_input_->setPlaceholderText(placeholder.isEmpty()
+            ? QStringLiteral("系统演算中……")
+            : placeholder);
+    } else {
+        action_input_->setPlaceholderText(
+            QStringLiteral("输入你的行动……"));
+    }
+}
+
+void MainWindow::onExecuteClicked() {
+    if (game_locked_ || request_inflight_) {
+        return;
+    }
+    if (LLMClient::shouldBlockForCyberpsychosis(player_)) {
+        enterCyberpsychosisEnding();
+        return;
+    }
+    const QString text = action_input_->text().trimmed();
+    if (text.isEmpty()) {
+        return;
+    }
+    if (llm_client_.apiKey().isEmpty()) {
+        narrative_->append(QStringLiteral(
+            "<p style=\"color:#ffe066\">【提示】请先配置 config.json 中的 api_key。</p>"));
+        return;
+    }
+
+    player_.incrementActionCount(1);
+    action_input_->clear();
+    setInputBusy(true);
+
+    llm_client_.requestChatCompletion(player_, world_, text);
+}
+
+void MainWindow::onLlmCompleted(const QString& message_content) {
+    setInputBusy(false);
+
+    if (game_locked_) {
+        return;
+    }
+
+    if (!applyLlmGameJson(message_content)) {
+        narrative_->append(QStringLiteral(
+            "<p style=\"color:#ffe066\">【协议错误】模型返回的 JSON 无法解析，请重试。</p>"));
+        SaveManager::saveToFile(player_, world_, saveGamePathStd());
+        return;
+    }
+
+    refreshPlayerPanel();
+
+    if (player_.humanity() <= 0) {
+        enterCyberpsychosisEnding();
+        return;
+    }
+
+    if (player_.hp() <= 0) {
+        narrative_->append(QStringLiteral(
+            "<p style=\"color:#ff6666\">【结局】HP 归零 —— 无名小卒，夜之城不记得你。</p>"));
+        game_locked_ = true;
+        stopAmbienceTimers();
+        setInputBusy(true);
+        SaveManager::saveToFile(player_, world_, saveGamePathStd());
+        return;
+    }
+
+    SaveManager::saveToFile(player_, world_, saveGamePathStd());
+}
+
+void MainWindow::onLlmFailed(const QString& error_message) {
+    setInputBusy(false);
+    if (!game_locked_) {
+        narrative_->append(QStringLiteral("<p style=\"color:#ffe066\">【演算失败】%1</p>")
+                               .arg(error_message.toHtmlEscaped()));
+    }
+}
+
+bool MainWindow::applyLlmGameJson(const QString& json_text) {
+    try {
+        const json root = json::parse(json_text.toStdString());
+        const std::string narrative_raw = root.at("narrative").get<std::string>();
+        const int hp_delta = root.at("hp_change").get<int>();
+        const int hum_delta = root.at("humanity_change").get<int>();
+        const std::string new_item = root.at("new_item").get<std::string>();
+        const std::string new_cw = root.at("new_cyberware").get<std::string>();
+        std::string npc_name;
+        int npc_delta = 0;
+        const bool has_npc_delta = root.contains("npc_relation_change") &&
+                                   !root["npc_relation_change"].is_null();
+        if (has_npc_delta) {
+            const auto& nr = root["npc_relation_change"];
+            npc_name = nr.at("name").get<std::string>();
+            npc_delta = nr.at("change").get<int>();
+        }
+        const std::string summary =
+            root.at("current_situation_summary").get<std::string>();
+        const bool is_dead = root.at("is_dead").get<bool>();
+        const bool is_legend = root.at("is_legend").get<bool>();
+
+        const QString narrative = QString::fromStdString(narrative_raw);
+        narrative_->append(
+            QStringLiteral("<p style=\"color:#5dffc8\">%1</p>")
+                .arg(narrative.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br/>"))));
+
+        player_.setHp(player_.hp() + hp_delta);
+        player_.setHumanity(player_.humanity() + hum_delta);
+        if (!new_item.empty()) {
+            player_.addInventoryItem(new_item);
+        }
+        if (!new_cw.empty()) {
+            player_.addCyberware(new_cw);
+        }
+        if (has_npc_delta) {
+            world_.npcRelations()[npc_name] += npc_delta;
+        }
+        world_.setGlobalSummary(summary);
+        world_.pushSlidingWindow(narrative_raw);
+
+        if (is_legend) {
+            narrative_->append(QStringLiteral(
+                "<p style=\"color:#ffe066;font-weight:bold\">【传奇】我们在来生酒吧见，传奇！</p>"));
+        }
+        if (is_dead && is_legend) {
+            narrative_->append(QStringLiteral(
+                "<p style=\"color:#7df9ff\">在最绚烂的火焰中，名字被刻进夜之城。</p>"));
+        }
+
+        Q_UNUSED(is_dead);
+        return true;
+    } catch (const std::exception& ex) {
+        narrative_->append(QStringLiteral("<p style=\"color:#ffe066\">【解析异常】%1</p>")
+                               .arg(QString::fromUtf8(ex.what()).toHtmlEscaped()));
+        return false;
+    }
+}
+
+void MainWindow::enterCyberpsychosisEnding() {
+    game_locked_ = true;
+    stopAmbienceTimers();
+
+    SaveManager::deleteSaveFile(saveGamePathStd());
+
+    narrative_->clear();
+    narrative_->setHtml(cyberpsychosisHtml());
+
+    /**
+     * 终局强反馈：短促红色闪烁若干次（不阻塞事件循环）。
+     */
+    endgame_flash_remaining_ = 12;
+    endgame_flash_timer_->start(90);
+
+    action_input_->setEnabled(false);
+    execute_btn_->setEnabled(false);
+    action_input_->clear();
+    action_input_->setPlaceholderText(QStringLiteral("神经链路已熔断"));
+
+    refreshPlayerPanel();
+}
+
+void MainWindow::stopAmbienceTimers() {
+    if (humanity_glitch_timer_) {
+        humanity_glitch_timer_->stop();
+    }
+    if (endgame_flash_timer_) {
+        endgame_flash_timer_->stop();
+    }
+}
+
+void MainWindow::onHumanityGlitchPulse() {
+    if (game_locked_) {
+        return;
+    }
+    /**
+     * 预留/轻度实现 PRD「<=50 偶尔 Glitch」：随机延时后插入噪点片段，并让叙事区背景短暂偏红。
+     */
+    if (player_.humanity() <= 50 && player_.humanity() > 0) {
+        narrative_->append(QStringLiteral("<span style=\"color:#8899aa;font-size:12px\">")
+                           + randomGlitchFragment().toHtmlEscaped() + QStringLiteral("</span>"));
+
+        narrative_->setStyleSheet(QStringLiteral(
+            "QTextBrowser { background-color: #261010; color: #5dffc8; "
+            "border: 1px solid #5a2222; }"));
+        QTimer::singleShot(220, this, [this]() {
+            if (!game_locked_ && narrative_) {
+                narrative_->setStyleSheet(QString());
+            }
+        });
+    }
+
+    const int base = 4000 + (QRandomGenerator::global()->bounded(5000));
+    humanity_glitch_timer_->start(base);
+}
+
+void MainWindow::onEndgameFlashTick() {
+    if (endgame_flash_remaining_ <= 0) {
+        endgame_flash_timer_->stop();
+        if (narrative_) {
+            narrative_->setStyleSheet(QString());
+        }
+        return;
+    }
+    --endgame_flash_remaining_;
+    const bool on = (endgame_flash_remaining_ % 2) == 0;
+    narrative_->setStyleSheet(on ? QStringLiteral(
+        "QTextBrowser { background-color: #3d0505; color: #ff1a1a; "
+        "border: 2px solid #ff3333; }")
+                                 : QStringLiteral(
+        "QTextBrowser { background-color: #140303; color: #ff1a1a; "
+        "border: 2px solid #880000; }"));
+}

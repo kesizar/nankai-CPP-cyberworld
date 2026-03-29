@@ -1,0 +1,63 @@
+# --- 构建目录 ---
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# --- MSVC / Visual Studio ---
+.vs/
+*.vcxproj.user
+*.user
+*.user.*
+*.suo
+*.sln.docstates
+x64/
+x86/
+[Dd]ebug/
+[Rr]elease/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.pch
+*.aps
+
+# --- Qt ---
+*.qm
+*.prl
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.autosave
+.qt/
+
+# --- Qt Creator ---
+*.pro.user
+*.pro.user.*
+
+# --- 密钥与运行时数据（勿提交）---
+config.json
+savegame.json
+**/config.json
+**/savegame.json
+
+# --- 系统与编辑器 ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.log
+
+# --- 其它 ---
+*.tmp
+*.bak
