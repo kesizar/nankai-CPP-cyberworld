@@ -41,6 +41,8 @@ private:
     void loadConfigOrWarn();
     void bootstrapGameState();
     void refreshPlayerPanel();
+    /** Humanity<=30：剧情区持续暗红、窗口红边框；>30 清除。终局锁定时不覆盖终局演出。 */
+    void applyLowHumanityChrome();
     void setInputBusy(bool busy, const QString& placeholder = QString());
     /** 解析 DeepSeek 返回的 JSON 文本，更新 Player / WorldState。成功返回 true。 */
     bool applyLlmGameJson(const QString& json_text);
@@ -55,6 +57,8 @@ private:
     QString saveGamePath() const;
 
     QWidget* central_{nullptr};
+    /** 包一层叙事区，便于用 contentsMargins 做 Glitch 式轻微错位。 */
+    QWidget* narrative_jitter_wrap_{nullptr};
     QTextBrowser* narrative_{nullptr};
     QLineEdit* action_input_{nullptr};
     QPushButton* execute_btn_{nullptr};

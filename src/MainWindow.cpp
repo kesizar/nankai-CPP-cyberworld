@@ -9,6 +9,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
@@ -190,6 +191,7 @@ int clampBarMax(int value) {
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    setObjectName(QStringLiteral("MainCyberWindow"));
     buildUi();
     applyCyberpunkQss();
 
@@ -237,10 +239,14 @@ void MainWindow::buildUi() {
     auto* left = new QWidget(splitter);
     auto* left_lay = new QVBoxLayout(left);
     left_lay->setContentsMargins(4, 4, 4, 4);
-    narrative_ = new QTextBrowser(left);
+    narrative_jitter_wrap_ = new QWidget(left);
+    auto* nar_wrap_lay = new QVBoxLayout(narrative_jitter_wrap_);
+    nar_wrap_lay->setContentsMargins(4, 4, 4, 4);
+    narrative_ = new QTextBrowser(narrative_jitter_wrap_);
     narrative_->setOpenExternalLinks(false);
     narrative_->setReadOnly(true);
-    left_lay->addWidget(narrative_, 1);
+    nar_wrap_lay->addWidget(narrative_, 1);
+    left_lay->addWidget(narrative_jitter_wrap_, 1);
 
     auto* row = new QHBoxLayout();
     action_input_ = new QLineEdit(left);
@@ -370,6 +376,31 @@ void MainWindow::bootstrapGameState() {
     }
 }
 
+void MainWindow::applyLowHumanityChrome() {
+    if (game_locked_) {
+        return;
+    }
+    const int h = player_.humanity();
+    if (h <= 30 && h > 0) {
+        narrative_->setStyleSheet(QStringLiteral(
+            "QTextBrowser {"
+            "  background-color: #2a0c0e;"
+            "  color: #7de8d4;"
+            "  border: 2px solid #8b2024;"
+            "  border-radius: 4px;"
+            "  selection-background-color: #4a1518;"
+            "}"));
+        setStyleSheet(QStringLiteral(
+            "QMainWindow#MainCyberWindow {"
+            "  border: 3px solid #c62828;"
+            "  border-radius: 8px;"
+            "}"));
+    } else {
+        narrative_->setStyleSheet(QString());
+        setStyleSheet(QString());
+    }
+}
+
 void MainWindow::refreshPlayerPanel() {
     const int hp_max = clampBarMax(player_.hp());
     hp_bar_->setRange(0, hp_max);
@@ -422,6 +453,8 @@ void MainWindow::refreshPlayerPanel() {
     } else {
         right_panel_->setStyleSheet(QString());
     }
+
+    applyLowHumanityChrome();
 }
 
 void MainWindow::setInputBusy(bool busy, const QString& placeholder) {
@@ -625,20 +658,32 @@ void MainWindow::onHumanityGlitchPulse() {
         return;
     }
     /**
-     * 预留/轻度实现 PRD「<=50 偶尔 Glitch」：随机延时后插入噪点片段，并让叙事区背景短暂偏红。
+     * PRD：<=50 偶尔 Glitch —— 噪点 + 叙事区外包一层 contentsMargins 轻微错位（不改动 ≤30 持续暗红底）。
      */
     if (player_.humanity() <= 50 && player_.humanity() > 0) {
         narrative_->append(QStringLiteral("<span style=\"color:#8899aa;font-size:12px\">")
                            + randomGlitchFragment().toHtmlEscaped() + QStringLiteral("</span>"));
 
-        narrative_->setStyleSheet(QStringLiteral(
-            "QTextBrowser { background-color: #261010; color: #5dffc8; "
-            "border: 1px solid #5a2222; }"));
-        QTimer::singleShot(220, this, [this]() {
-            if (!game_locked_ && narrative_) {
-                narrative_->setStyleSheet(QString());
+        if (narrative_jitter_wrap_) {
+            if (QLayout* lay = narrative_jitter_wrap_->layout()) {
+                const QMargins cm = lay->contentsMargins();
+                int base_m = cm.left() > 0 ? cm.left() : 4;
+                base_m = qBound(2, base_m, 8);
+                const int dx = QRandomGenerator::global()->bounded(5) - 2;
+                const int dy = QRandomGenerator::global()->bounded(5) - 2;
+                lay->setContentsMargins(qMax(0, base_m + dx), qMax(0, base_m + dy),
+                                        qMax(0, base_m - dx), qMax(0, base_m - dy));
+                QTimer::singleShot(110, this, [this, base_m]() {
+                    if (game_locked_ || !narrative_jitter_wrap_) {
+                        return;
+                    }
+                    if (QLayout* l2 = narrative_jitter_wrap_->layout()) {
+                        l2->setContentsMargins(base_m, base_m, base_m, base_m);
+                    }
+                    applyLowHumanityChrome();
+                });
             }
-        });
+        }
     }
 
     const int base = 4000 + (QRandomGenerator::global()->bounded(5000));
@@ -651,6 +696,7 @@ void MainWindow::onEndgameFlashTick() {
         if (narrative_) {
             narrative_->setStyleSheet(QString());
         }
+        applyLowHumanityChrome();
         return;
     }
     --endgame_flash_remaining_;
