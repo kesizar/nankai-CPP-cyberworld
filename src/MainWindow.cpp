@@ -19,11 +19,148 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <string>
+
 #include <json.hpp>
 
 namespace {
 
 using nlohmann::json;
+
+/** 与 LLMClient 一致：去掉 ```json 围栏，避免 parse 得到非对象或截断。 */
+QString unwrapModelJson(QString raw) {
+    raw = raw.trimmed();
+    if (!raw.startsWith(QStringLiteral("```"))) {
+        return raw;
+    }
+    const int first_nl = raw.indexOf(QLatin1Char('\n'));
+    if (first_nl != -1) {
+        raw = raw.mid(first_nl + 1);
+    } else {
+        raw = raw.mid(3);
+    }
+    raw = raw.trimmed();
+    if (raw.endsWith(QStringLiteral("```"))) {
+        const int fence = raw.lastIndexOf(QStringLiteral("```"));
+        if (fence >= 0) {
+            raw = raw.left(fence);
+        }
+    }
+    return raw.trimmed();
+}
+
+std::string jString(const json& j, const char* key, const std::string& def = {}) {
+    const auto it = j.find(key);
+    if (it == j.end() || it->is_null()) {
+        return def;
+    }
+    if (it->is_string()) {
+        return it->get<std::string>();
+    }
+    return def;
+}
+
+int jInt(const json& j, const char* key, int def = 0) {
+    const auto it = j.find(key);
+    if (it == j.end() || it->is_null()) {
+        return def;
+    }
+    if (it->is_number_integer()) {
+        return static_cast<int>(it->get<int>());
+    }
+    if (it->is_number_unsigned()) {
+        return static_cast<int>(it->get<unsigned>());
+    }
+    if (it->is_number_float()) {
+        return static_cast<int>(it->get<double>());
+    }
+    if (it->is_string()) {
+        try {
+            return std::stoi(it->get<std::string>());
+        } catch (...) {
+            return def;
+        }
+    }
+    return def;
+}
+
+bool jBool(const json& j, const char* key, bool def = false) {
+    const auto it = j.find(key);
+    if (it == j.end() || it->is_null()) {
+        return def;
+    }
+    if (it->is_boolean()) {
+        return it->get<bool>();
+    }
+    if (it->is_number_integer()) {
+        return it->get<int>() != 0;
+    }
+    if (it->is_string()) {
+        const auto s = it->get<std::string>();
+        if (s == "true" || s == "1") {
+            return true;
+        }
+        if (s == "false" || s == "0") {
+            return false;
+        }
+    }
+    return def;
+}
+
+/**
+ * 兼容：对象 {name, change}、别名字段 npc/delta、或对象数组。
+ * 全程使用 find + 类型判断，不使用 at("name")，避免模型漏键崩溃。
+ */
+void applyNpcRelationChange(WorldState& world, const json& root) {
+    const auto it = root.find("npc_relation_change");
+    if (it == root.end() || it->is_null()) {
+        return;
+    }
+
+    const auto apply_one = [&world](const json& nr) -> void {
+        if (!nr.is_object()) {
+            return;
+        }
+        std::string name;
+        if (const auto ni = nr.find("name"); ni != nr.end() && ni->is_string()) {
+            name = ni->get<std::string>();
+        } else if (const auto ni = nr.find("npc"); ni != nr.end() && ni->is_string()) {
+            name = ni->get<std::string>();
+        }
+        if (name.empty()) {
+            return;
+        }
+        int delta = 0;
+        if (const auto ci = nr.find("change"); ci != nr.end()) {
+            if (ci->is_number_integer()) {
+                delta = static_cast<int>(ci->get<int>());
+            } else if (ci->is_number_unsigned()) {
+                delta = static_cast<int>(ci->get<unsigned>());
+            } else if (ci->is_number_float()) {
+                delta = static_cast<int>(ci->get<double>());
+            } else if (ci->is_string()) {
+                try {
+                    delta = std::stoi(ci->get<std::string>());
+                } catch (...) {
+                }
+            }
+        } else if (const auto di = nr.find("delta"); di != nr.end()) {
+            if (di->is_number_integer()) {
+                delta = static_cast<int>(di->get<int>());
+            }
+        }
+        world.npcRelations()[name] += delta;
+    };
+
+    const json& v = *it;
+    if (v.is_object()) {
+        apply_one(v);
+    } else if (v.is_array()) {
+        for (const auto& el : v) {
+            apply_one(el);
+        }
+    }
+}
 
 QString cyberpsychosisHtml() {
     return QStringLiteral(
@@ -352,13 +489,14 @@ void MainWindow::onLlmCompleted(const QString& message_content) {
         return;
     }
 
-    if (player_.hp() <= 0) {
-        narrative_->append(QStringLiteral(
-            "<p style=\"color:#ff6666\">【结局】HP 归零 —— 无名小卒，夜之城不记得你。</p>"));
-        game_locked_ = true;
-        stopAmbienceTimers();
-        setInputBusy(true);
-        SaveManager::saveToFile(player_, world_, saveGamePathStd());
+    /** is_dead ≡ (HP<=0)，仅此条件；与 is_legend 组合分流终局。 */
+    const bool is_dead = (player_.hp() <= 0);
+    if (is_dead) {
+        if (last_llm_is_legend_) {
+            enterLegendEnding();
+        } else {
+            enterNobodyEnding();
+        }
         return;
     }
 
@@ -374,26 +512,29 @@ void MainWindow::onLlmFailed(const QString& error_message) {
 }
 
 bool MainWindow::applyLlmGameJson(const QString& json_text) {
+    last_llm_is_legend_ = false;
     try {
-        const json root = json::parse(json_text.toStdString());
-        const std::string narrative_raw = root.at("narrative").get<std::string>();
-        const int hp_delta = root.at("hp_change").get<int>();
-        const int hum_delta = root.at("humanity_change").get<int>();
-        const std::string new_item = root.at("new_item").get<std::string>();
-        const std::string new_cw = root.at("new_cyberware").get<std::string>();
-        std::string npc_name;
-        int npc_delta = 0;
-        const bool has_npc_delta = root.contains("npc_relation_change") &&
-                                   !root["npc_relation_change"].is_null();
-        if (has_npc_delta) {
-            const auto& nr = root["npc_relation_change"];
-            npc_name = nr.at("name").get<std::string>();
-            npc_delta = nr.at("change").get<int>();
+        const json root = json::parse(unwrapModelJson(json_text).toStdString());
+        if (!root.is_object()) {
+            narrative_->append(QStringLiteral(
+                "<p style=\"color:#ffe066\">【解析异常】模型内容不是 JSON 对象。</p>"));
+            return false;
         }
-        const std::string summary =
-            root.at("current_situation_summary").get<std::string>();
-        const bool is_dead = root.at("is_dead").get<bool>();
-        const bool is_legend = root.at("is_legend").get<bool>();
+
+        const std::string narrative_raw = jString(root, "narrative");
+        if (narrative_raw.empty()) {
+            narrative_->append(QStringLiteral(
+                "<p style=\"color:#ffe066\">【解析异常】缺少 narrative 或为空。</p>"));
+            return false;
+        }
+
+        const int hp_delta = jInt(root, "hp_change", 0);
+        const int hum_delta = jInt(root, "humanity_change", 0);
+        const std::string new_item = jString(root, "new_item");
+        const std::string new_cw = jString(root, "new_cyberware");
+        const std::string summary = jString(root, "current_situation_summary");
+        /** is_dead 仅由回合末 HP<=0 判定，不再读取模型 JSON。 */
+        last_llm_is_legend_ = jBool(root, "is_legend", false);
 
         const QString narrative = QString::fromStdString(narrative_raw);
         narrative_->append(
@@ -408,28 +549,43 @@ bool MainWindow::applyLlmGameJson(const QString& json_text) {
         if (!new_cw.empty()) {
             player_.addCyberware(new_cw);
         }
-        if (has_npc_delta) {
-            world_.npcRelations()[npc_name] += npc_delta;
-        }
+        applyNpcRelationChange(world_, root);
         world_.setGlobalSummary(summary);
         world_.pushSlidingWindow(narrative_raw);
 
-        if (is_legend) {
-            narrative_->append(QStringLiteral(
-                "<p style=\"color:#ffe066;font-weight:bold\">【传奇】我们在来生酒吧见，传奇！</p>"));
-        }
-        if (is_dead && is_legend) {
-            narrative_->append(QStringLiteral(
-                "<p style=\"color:#7df9ff\">在最绚烂的火焰中，名字被刻进夜之城。</p>"));
-        }
-
-        Q_UNUSED(is_dead);
         return true;
     } catch (const std::exception& ex) {
         narrative_->append(QStringLiteral("<p style=\"color:#ffe066\">【解析异常】%1</p>")
                                .arg(QString::fromUtf8(ex.what()).toHtmlEscaped()));
         return false;
     }
+}
+
+void MainWindow::enterLegendEnding() {
+    game_locked_ = true;
+    stopAmbienceTimers();
+    narrative_->append(QStringLiteral(
+        "<p style=\"color:#ffe066;font-weight:bold\">【传奇结局】我们在来生酒吧见，传奇！</p>"
+        "<p style=\"color:#7df9ff\">在最绚烂的火焰中，名字被刻进夜之城。</p>"));
+    action_input_->setEnabled(false);
+    execute_btn_->setEnabled(false);
+    action_input_->clear();
+    action_input_->setPlaceholderText(QStringLiteral("传奇已封笔"));
+    refreshPlayerPanel();
+    SaveManager::deleteSaveFile(saveGamePathStd());
+}
+
+void MainWindow::enterNobodyEnding() {
+    game_locked_ = true;
+    stopAmbienceTimers();
+    narrative_->append(QStringLiteral(
+        "<p style=\"color:#ff6666\">【结局】HP 归零 —— 无名小卒，夜之城不记得你。</p>"));
+    action_input_->setEnabled(false);
+    execute_btn_->setEnabled(false);
+    action_input_->clear();
+    action_input_->setPlaceholderText(QStringLiteral("电路已静默"));
+    refreshPlayerPanel();
+    SaveManager::deleteSaveFile(saveGamePathStd());
 }
 
 void MainWindow::enterCyberpsychosisEnding() {

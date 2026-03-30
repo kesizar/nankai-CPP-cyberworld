@@ -15,6 +15,28 @@
 
 namespace {
 
+/** 模型常在 content 外包一层 ```json … ```，会导致解析失败或结构异常。 */
+QString stripMarkdownJsonFence(QString content) {
+    content = content.trimmed();
+    if (!content.startsWith(QStringLiteral("```"))) {
+        return content;
+    }
+    const int first_nl = content.indexOf(QLatin1Char('\n'));
+    if (first_nl != -1) {
+        content = content.mid(first_nl + 1);
+    } else {
+        content = content.mid(3);
+    }
+    content = content.trimmed();
+    if (content.endsWith(QStringLiteral("```"))) {
+        const int fence = content.lastIndexOf(QStringLiteral("```"));
+        if (fence >= 0) {
+            content = content.left(fence);
+        }
+    }
+    return content.trimmed();
+}
+
 constexpr auto kDeepSeekEndpoint =
     "https://api.deepseek.com/chat/completions";
 constexpr auto kModelName = "deepseek-chat";
@@ -177,7 +199,8 @@ QString LLMClient::buildSystemPrompt(const Player& player,
         "你必须只输出一个 JSON 对象，字段与类型需符合："
         "narrative (string), hp_change (int), humanity_change (int), new_item (string), "
         "new_cyberware (string), npc_relation_change (object: name string, change int), "
-        "current_situation_summary (string), is_dead (bool), is_legend (bool)。");
+        "current_situation_summary (string), is_dead (bool, 可填但客户端忽略，死亡仅以回合末 HP<=0 为准), "
+        "is_legend (bool, 若本回合末玩家因 HP<=0 死亡且达成传奇则必须为 true，否则 false)。");
 
     return world_view + QLatin1Char('\n') + player_bg + QLatin1Char('\n') + goal +
            QLatin1Char('\n') + filter + QLatin1Char('\n') + state +
@@ -294,5 +317,5 @@ void LLMClient::onReplyFinished() {
         return;
     }
 
-    emit completionReceived(content);
+    emit completionReceived(stripMarkdownJsonFence(content));
 }

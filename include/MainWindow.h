@@ -46,6 +46,10 @@ private:
     bool applyLlmGameJson(const QString& json_text);
     /** PRD：赛博精神病终局 —— 清空剧情区、血红色大字、禁用输入、删档。 */
     void enterCyberpsychosisEnding();
+    /** HP<=0 且模型声明传奇：最高荣誉结局（不写入存档，删除 savegame）。 */
+    void enterLegendEnding();
+    /** HP<=0 且非传奇：无名小卒结局（不写入存档，删除 savegame）。 */
+    void enterNobodyEnding();
     void stopAmbienceTimers();
     std::string saveGamePathStd() const;
     QString saveGamePath() const;
@@ -72,4 +76,6 @@ private:
     int endgame_flash_remaining_{0};
     bool game_locked_{false};
     bool request_inflight_{false};
+    /** 仅上一轮流式响应解析出的 is_legend；is_dead 由 HP<=0 在 C++ 侧推导。 */
+    bool last_llm_is_legend_{false};
 };
