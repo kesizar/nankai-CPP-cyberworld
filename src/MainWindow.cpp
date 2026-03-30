@@ -250,8 +250,7 @@ void MainWindow::buildUi() {
 
     auto* row = new QHBoxLayout();
     action_input_ = new QLineEdit(left);
-    action_input_->setPlaceholderText(
-        QStringLiteral("输入你的行动……（需先配置 config.json 中的 api_key）"));
+    action_input_->setPlaceholderText(QStringLiteral("输入你的行动……"));
     execute_btn_ = new QPushButton(QStringLiteral("执行"), left);
     row->addWidget(action_input_, 1);
     row->addWidget(execute_btn_);
