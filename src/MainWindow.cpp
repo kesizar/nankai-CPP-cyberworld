@@ -366,10 +366,14 @@ void MainWindow::bootstrapGameState() {
             QStringLiteral("<p style=\"color:#ffe066\">【系统】存档已载入。</p>"));
     } else {
         narrative_->append(QStringLiteral(
-            "<p style=\"color:#7df9ff\">欢迎来到夜之城。高科技，低生活 —— "
-            "你刚拿到一件军用级义体，活下去，或者被烧成灰。</p>"
-            "<p style=\"color:#5dffc8\">在下方输入行动，点击<strong>执行</strong>开始。"
-            "</p>"));
+            "<p style=\"color:#7df9ff\">夜之城的雨洗不掉街头的污垢，只能让霓虹灯的倒影显得更加泥泞。</p>"
+            "<p style=\"color:#5dffc8\">昨天，学院的西装暴徒把你像件不合格的零件一样扫地出门。他们说你缺乏“公司基因”，其实你只是卡里没钱。"
+            "你的母亲上周死在发臭的诊所担架上，创伤小组看了一眼她掉线的保险卡，连浮空车的引擎都没熄就飞走了。</p>"
+            "<p style=\"color:#5dffc8\">现在，这间逼仄的公寓里只剩下合成面条的馊味、一沓催款单，还有桌上那块用旧油布裹着的军用级义体。"
+            "它很沉，带着臭氧和死亡的冷硬气息。这是一张通往地狱的单程票，而你正准备将它接入脊椎。</p>"
+            "<p style=\"color:#5dffc8\">在这座吃人的城市里，无名小卒和街头传奇之间唯一的区别，就是你燃烧殆尽时引发的爆炸有多响。</p>"
+            "<p style=\"color:#ffe066;font-weight:bold\">是时候点燃这根火柴了。</p>"
+            "<p style=\"color:#5dffc8\">在下方输入行动，点击<strong>执行</strong>开始。</p>"));
     }
     if (player_.humanity() <= 0) {
         enterCyberpsychosisEnding();
