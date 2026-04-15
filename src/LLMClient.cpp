@@ -40,8 +40,10 @@ QString stripMarkdownJsonFence(QString content) {
 constexpr auto kDeepSeekEndpoint =
     "https://api.deepseek.com/chat/completions";
 constexpr auto kModelName = "deepseek-chat";
+/** 强制危机：每若干次有效操作在 user 末尾追加一次（第 0 次不计）。 */
+constexpr int kForcedCrisisInterval = 15;
 
-/** PRD 指定的 user 消息末尾强注入文案（第 30、60、90… 次行动触发）。 */
+/** user 消息末尾强注入文案（第15、30、45… 次行动触发，间隔见 kForcedCrisisInterval）。 */
 QString forcedCrisisDirective() {
     return QStringLiteral(
         "\n\n[系统强制事件]：立刻无视玩家当前的和平行动，触发一次符合当前剧情上下文的"
@@ -155,10 +157,11 @@ QString LLMClient::buildUserPayloadText(const QString& user_action,
                                         int action_count) {
     QString text = user_action;
     /**
-     * PRD 第四部分：action_count > 0 且 action_count % 30 == 0 时，
-     * 在发给 API 的 user 角色文本末尾强制追加危机指令（第 0 次不计入“每 30 步”）。
+     * 压力机制：action_count > 0 且为 kForcedCrisisInterval 的倍数时，
+     * 在发给 API 的 user 角色文本末尾强制追加危机指令。
      */
-    if (action_count > 0 && (action_count % 30 == 0)) {
+    if (action_count > 0 &&
+        (action_count % kForcedCrisisInterval == 0)) {
         text += forcedCrisisDirective();
     }
     return text;
@@ -169,11 +172,23 @@ QString LLMClient::buildSystemPrompt(const Player& player,
     const QString filter = narrativeFilterForHumanity(player.humanity());
 
     const QString world_view = QStringLiteral(
-        "[世界观设定]：《赛博朋克2077》的夜之城。高科技，低生活，公司财阀几乎掌控一切。");
+        "[世界观设定]：《赛博朋克2077》的夜之城。高科技，低生活，公司财阀几乎掌控一切。"
+        "街头利益与暴力是常态，信任稀缺，没人有义务免费帮你。");
     const QString player_bg = QStringLiteral(
         "[玩家背景]：出身街头的底层青年（类似大卫·马丁内斯），刚意外获得一件军用级强力义体。");
     const QString goal = QStringLiteral(
         "[终极目标]：在夜之城“成为传奇”——名扬天下，或在最绚烂的爆炸中死去。");
+
+    const QString npc_rules = QStringLiteral(
+        "[NPC 与人物塑造规则]\n"
+        "1) 命名：新登场 NPC 须给出稳定简短称呼（约 2～8 字或固定代号），后续回合与 npc_relations 键名保持一致，勿长期用「陌生人」。\n"
+        "2) 立体感：凡有台词或关键动作的 NPC，至少体现一项：表层目标、隐藏动机、明显缺陷/偏见、或所属公司/帮派立场；禁止无理由利他"
+        "的「全员善人」扁平形象。\n"
+        "3) 多元光谱：主动使用利己中间人、画饼高管、疲惫医护、敲诈清道夫、嘴臭但守信的技工、公司狗、创伤后麻木者等；善恶与灰度并存。\n"
+        "4) narrative：用可辨识细节区分人物（口音、义体部位、小动作、语速、衣着商标），精炼控制在约 150 字内，不写长篇设定。\n"
+        "5) npc_relation_change：互动改变态度时必须输出；name 与已有 npc_relations 键一致，新 NPC 用新 name；无变化时 name 置空字符串、"
+        "change 为 0。\n"
+        "6) 上下文：结合 global_summary 与 sliding_window 延续已登场 NPC 的性格与关系，勿每回合重置人设。");
 
     QString state = QStringLiteral(
                        "[当前状态快照]\n"
@@ -198,13 +213,14 @@ QString LLMClient::buildSystemPrompt(const Player& player,
     const QString schema_hint = QStringLiteral(
         "你必须只输出一个 JSON 对象，字段与类型需符合："
         "narrative (string), hp_change (int), humanity_change (int), new_item (string), "
-        "new_cyberware (string), npc_relation_change (object: name string, change int), "
+        "new_cyberware (string), "
+        "npc_relation_change (object: name string, change int；本回合多 NPC 同时变动时只提交对玩家影响最大的一条), "
         "current_situation_summary (string), is_dead (bool, 可填但客户端忽略，死亡仅以回合末 HP<=0 为准), "
         "is_legend (bool, 若本回合末玩家因 HP<=0 死亡且达成传奇则必须为 true，否则 false)。");
 
     return world_view + QLatin1Char('\n') + player_bg + QLatin1Char('\n') + goal +
-           QLatin1Char('\n') + filter + QLatin1Char('\n') + state +
-           QLatin1Char('\n') + schema_hint;
+           QLatin1Char('\n') + filter + QLatin1Char('\n') + npc_rules + QLatin1Char('\n') +
+           state + QLatin1Char('\n') + schema_hint;
 }
 
 void LLMClient::requestChatCompletion(const Player& player,
@@ -228,7 +244,7 @@ void LLMClient::requestChatCompletion(const Player& player,
     /**
      * 按 PRD Payload 组装 JSON：model、response_format、messages、temperature。
      * 叙事滤镜：由 Player.humanity 在 buildSystemPrompt() 中动态择一注入 system content。
-     * 危机追加：由 action_count 在 buildUserPayloadText() 中决定是否在 user 末尾拼接。
+     * 危机追加：由 action_count 与 kForcedCrisisInterval 在 buildUserPayloadText() 中决定是否在 user 末尾拼接。
      */
     QJsonObject root;
     root.insert(QStringLiteral("model"), QString::fromUtf8(kModelName));

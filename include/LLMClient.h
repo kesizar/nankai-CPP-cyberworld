@@ -40,7 +40,7 @@ public:
      * @brief 组装异步 POST：model、messages、response_format、temperature。
      *
      * 内部根据 Player.humanity 选择唯一叙事滤镜字符串；若 action_count > 0 且
-     * action_count % 30 == 0，则在 user 文本末尾强制追加危机指令。
+     * 为15 的倍数（与 LLMClient 内 kForcedCrisisInterval 一致），则在 user 文本末尾强制追加危机指令。
      */
     void requestChatCompletion(const Player& player,
                                const WorldState& world,

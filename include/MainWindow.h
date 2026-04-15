@@ -33,6 +33,8 @@ private slots:
     void onLlmFailed(const QString& error_message);
     /** 低人性（<=50）时由定时器偶尔触发，用于轻微 Glitch / 背景压迫感。 */
     void onHumanityGlitchPulse();
+    /** Humanity 1–30：间歇模拟神经信号不稳（短闪后恢复渐变底，避免整块死红）。 */
+    void onHumanityAmbiencePulse();
     void onEndgameFlashTick();
 
 private:
@@ -41,7 +43,7 @@ private:
     void loadConfigOrWarn();
     void bootstrapGameState();
     void refreshPlayerPanel();
-    /** Humanity<=30：剧情区持续暗红、窗口红边框；>30 清除。终局锁定时不覆盖终局演出。 */
+    /** Humanity<=30：剧情区渐变暗红基线+窗口红边；31–50 冷灰排异前兆。终局锁定时不覆盖终局演出。 */
     void applyLowHumanityChrome();
     void setInputBusy(bool busy, const QString& placeholder = QString());
     /** 解析 DeepSeek 返回的 JSON 文本，更新 Player / WorldState。成功返回 true。 */
@@ -76,6 +78,7 @@ private:
     LLMClient llm_client_{this};
 
     QTimer* humanity_glitch_timer_{nullptr};
+    QTimer* humanity_ambience_timer_{nullptr};
     QTimer* endgame_flash_timer_{nullptr};
     int endgame_flash_remaining_{0};
     bool game_locked_{false};

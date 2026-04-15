@@ -172,16 +172,51 @@ QString cyberpsychosisHtml() {
         "</div>");
 }
 
-QString randomGlitchFragment() {
-    static const QString kPool =
-        QStringLiteral("█▓▒░0x7F错λΩ÷∆");
-    const qint64 seed = QDateTime::currentMSecsSinceEpoch();
-    QString out;
-    const int len = 4 + int(seed % 6);
-    for (int i = 0; i < len; ++i) {
-        out.append(kPool.at(int(seed + i * 31) % kPool.size()));
+/** 单行 Glitch：伪日志、十六进制噪点与块字符混合。 */
+QString glitchOverlayHtml() {
+    const quint32 r = QRandomGenerator::global()->generate();
+    const int mode = int(r % 5);
+    QString inner;
+    switch (mode) {
+        case 0: {
+            static const QString kPool =
+                QStringLiteral("\u2588\u2593\u2592\u2591\u25a1\u00d7\u2248\u03b4\u03bb\u03a9");
+            const int n = 5 + int((r >> 3) % 6);
+            for (int i = 0; i < n; ++i) {
+                inner.append(kPool.at(int((r >> (i * 5)) % kPool.size())));
+            }
+            break;
+        }
+        case 1:
+            inner = QStringLiteral("SYNAPSE_%1_UNDERFLOW")
+                        .arg((r & 0xFFFF), 4, 16, QLatin1Char('0'));
+            break;
+        case 2:
+            inner = QStringLiteral("0x%1 ... LOST ... 0x%2")
+                        .arg((r & 0xFF), 2, 16, QLatin1Char('0'))
+                        .arg(((r >> 8) & 0xFF), 2, 16, QLatin1Char('0'));
+            break;
+        case 3:
+            inner = QStringLiteral("// NEURAL_FLUSH_FAIL id=%1").arg(r % 9999);
+            break;
+        default:
+            inner = QStringLiteral("VISUAL_CORTEX_JITTER %1 ms")
+                        .arg(40 + int(r % 120));
+            break;
     }
-    return out;
+    const double op = (48 + int(r % 35)) / 100.0;
+    const QString color =
+        (mode % 2 == 0) ? QStringLiteral("#9e5c5c") : QStringLiteral("#6a8a9a");
+    const double tracking = (int(r % 3) - 1) * 0.35;
+    return QStringLiteral(
+               "<p style=\"margin:2px 0;line-height:1.1;\">"
+               "<span style=\"color:%1;font-size:11px;opacity:%2;"
+               "font-family:Consolas,'Microsoft YaHei Mono',monospace;"
+               "letter-spacing:%3em;\">%4</span></p>")
+        .arg(color)
+        .arg(op, 0, 'f', 2)
+        .arg(tracking, 0, 'f', 2)
+        .arg(inner.toHtmlEscaped());
 }
 
 int clampBarMax(int value) {
@@ -199,6 +234,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     humanity_glitch_timer_->setSingleShot(true);
     connect(humanity_glitch_timer_, &QTimer::timeout, this,
             &MainWindow::onHumanityGlitchPulse);
+
+    humanity_ambience_timer_ = new QTimer(this);
+    connect(humanity_ambience_timer_, &QTimer::timeout, this,
+            &MainWindow::onHumanityAmbiencePulse);
 
     endgame_flash_timer_ = new QTimer(this);
     connect(endgame_flash_timer_, &QTimer::timeout, this,
@@ -385,19 +424,32 @@ void MainWindow::applyLowHumanityChrome() {
     }
     const int h = player_.humanity();
     if (h <= 30 && h > 0) {
+        /** 渐变底 + 青字略褪色：像监视器出血而非油漆桶填色。 */
         narrative_->setStyleSheet(QStringLiteral(
             "QTextBrowser {"
-            "  background-color: #2a0c0e;"
-            "  color: #7de8d4;"
-            "  border: 2px solid #8b2024;"
+            "  background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            "    stop:0 #120709, stop:0.4 #1f0d10, stop:0.75 #2a1216, stop:1 #15080a);"
+            "  color: #5ec4b0;"
+            "  border: 2px solid #6e2228;"
             "  border-radius: 4px;"
             "  selection-background-color: #4a1518;"
             "}"));
         setStyleSheet(QStringLiteral(
             "QMainWindow#MainCyberWindow {"
-            "  border: 3px solid #c62828;"
+            "  border: 3px solid #9a2a2a;"
             "  border-radius: 8px;"
             "}"));
+    } else if (h <= 50) {
+        /** 31–50：冷灰偏色 + 细边框，暗示排异前兆而非持续血红。 */
+        narrative_->setStyleSheet(QStringLiteral(
+            "QTextBrowser {"
+            "  background-color: #0b0e12;"
+            "  color: #5dffc8;"
+            "  border: 1px solid #3a3038;"
+            "  border-radius: 4px;"
+            "  selection-background-color: #253038;"
+            "}"));
+        setStyleSheet(QString());
     } else {
         narrative_->setStyleSheet(QString());
         setStyleSheet(QString());
@@ -458,6 +510,50 @@ void MainWindow::refreshPlayerPanel() {
     }
 
     applyLowHumanityChrome();
+
+    if (!game_locked_) {
+        const int h = player_.humanity();
+        if (h >= 1 && h <= 30) {
+            if (!humanity_ambience_timer_->isActive()) {
+                humanity_ambience_timer_->setInterval(
+                    1400 + QRandomGenerator::global()->bounded(2000));
+                humanity_ambience_timer_->start();
+            }
+        } else {
+            humanity_ambience_timer_->stop();
+        }
+    }
+}
+
+void MainWindow::onHumanityAmbiencePulse() {
+    if (game_locked_) {
+        humanity_ambience_timer_->stop();
+        return;
+    }
+    const int h = player_.humanity();
+    if (h > 30 || h <= 0) {
+        humanity_ambience_timer_->stop();
+        return;
+    }
+    /** 随机短闪：模拟信号尖峰，随后回到 applyLowHumanityChrome 基线。 */
+    if (QRandomGenerator::global()->bounded(100) < 55) {
+        narrative_->setStyleSheet(QStringLiteral(
+            "QTextBrowser {"
+            "  background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            "    stop:0 #1a080c, stop:0.5 #3a1820, stop:1 #1a0a10);"
+            "  color: #4a9a88;"
+            "  border: 2px solid #c43c44;"
+            "  border-radius: 4px;"
+            "  selection-background-color: #4a1518;"
+            "}"));
+        const int ms = 70 + QRandomGenerator::global()->bounded(90);
+        QTimer::singleShot(ms, this, [this]() {
+            if (!game_locked_) {
+                applyLowHumanityChrome();
+            }
+        });
+    }
+    humanity_ambience_timer_->setInterval(1100 + QRandomGenerator::global()->bounded(2600));
 }
 
 void MainWindow::setInputBusy(bool busy, const QString& placeholder) {
@@ -651,6 +747,9 @@ void MainWindow::stopAmbienceTimers() {
     if (humanity_glitch_timer_) {
         humanity_glitch_timer_->stop();
     }
+    if (humanity_ambience_timer_) {
+        humanity_ambience_timer_->stop();
+    }
     if (endgame_flash_timer_) {
         endgame_flash_timer_->stop();
     }
@@ -661,11 +760,15 @@ void MainWindow::onHumanityGlitchPulse() {
         return;
     }
     /**
-     * PRD：<=50 偶尔 Glitch —— 噪点 + 叙事区外包一层 contentsMargins 轻微错位（不改动 ≤30 持续暗红底）。
+     * <=50：错位 + 伪系统乱码行；41–50 降低插入频率，避免刷屏失真。
      */
     if (player_.humanity() <= 50 && player_.humanity() > 0) {
-        narrative_->append(QStringLiteral("<span style=\"color:#8899aa;font-size:12px\">")
-                           + randomGlitchFragment().toHtmlEscaped() + QStringLiteral("</span>"));
+        const int h = player_.humanity();
+        const bool allow_text_glitch =
+            (h <= 40) || (QRandomGenerator::global()->bounded(100) < 42);
+        if (allow_text_glitch) {
+            narrative_->append(glitchOverlayHtml());
+        }
 
         if (narrative_jitter_wrap_) {
             if (QLayout* lay = narrative_jitter_wrap_->layout()) {

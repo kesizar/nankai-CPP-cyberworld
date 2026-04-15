@@ -6,7 +6,7 @@
 /**
  * @brief 玩家实体：生命值、人性、累计操作次数、背包与已安装义体。
  *
- * 与 PRD 对齐：humanity 初始 100；action_count 用于压力机制（每 30 步可触发强制危机）。
+ * 与 PRD 对齐：humanity 初始 100；action_count 用于压力机制（每 15 步触发强制危机，见 LLMClient）。
  */
 class Player {
 public:
