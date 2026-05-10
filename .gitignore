@@ -61,3 +61,6 @@ Thumbs.db
 # --- 其它 ---
 *.tmp
 *.bak
+
+# --- 实验报告：只保留成品 docx，不提交本地生成脚本 ---
+scripts/generate_report_docx.py
